@@ -52,6 +52,8 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.hbase.*;
+import org.apache.hadoop.hbase.Clock;
+import org.apache.hadoop.hbase.ClockType;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Put;
@@ -59,6 +61,7 @@ import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.master.HMaster;
 import org.apache.hadoop.hbase.monitoring.MonitoredTask;
 import org.apache.hadoop.hbase.regionserver.CompactingMemStore;
@@ -657,13 +660,22 @@ public abstract class AbstractTestWALReplay {
    * @throws IOException
    */
   @Test
-  public void testReplayEditsAfterAbortingFlush() throws IOException {
+  public void testReplayEditsAfterAbortingFlush() throws Exception {
+    testReplayEditsAfterAbortingFlush(new Clock.System());
+    setUp();
+    testReplayEditsAfterAbortingFlush(new Clock.SystemMonotonic());
+    tearDown();
+    setUp();
+    testReplayEditsAfterAbortingFlush(new Clock.HLC());
+  }
+
+  public void testReplayEditsAfterAbortingFlush(Clock clock) throws IOException {
     final TableName tableName =
         TableName.valueOf("testReplayEditsAfterAbortingFlush");
     final HRegionInfo hri = createBasic3FamilyHRegionInfo(tableName);
     final Path basedir = FSUtils.getTableDir(this.hbaseRootDir, tableName);
     deleteDir(basedir);
-    final HTableDescriptor htd = createBasic3FamilyHTD(tableName);
+    final HTableDescriptor htd = createBasic3FamilyHTD(tableName, clock.clockType);
     HRegion region3 = HBaseTestingUtility.createRegionAndWAL(hri, hbaseRootDir, this.conf, htd);
     HBaseTestingUtility.closeRegionAndWAL(region3);
     // Write countPerFamily edits into the three families. Do a flush on one
@@ -672,6 +684,7 @@ public abstract class AbstractTestWALReplay {
     WAL wal = createWAL(this.conf, hbaseRootDir, logName);
     RegionServerServices rsServices = Mockito.mock(RegionServerServices.class);
     Mockito.doReturn(false).when(rsServices).isAborted();
+    when(rsServices.getRegionServerClock(clock.clockType)).thenReturn(clock);
     when(rsServices.getServerName()).thenReturn(ServerName.valueOf("foo", 10, 10));
     Configuration customConf = new Configuration(this.conf);
     customConf.set(DefaultStoreEngine.DEFAULT_STORE_FLUSHER_CLASS_KEY,
@@ -1211,14 +1224,21 @@ public abstract class AbstractTestWALReplay {
   }
 
   private HTableDescriptor createBasic3FamilyHTD(final TableName tableName) {
-    HTableDescriptor htd = new HTableDescriptor(tableName);
-    HColumnDescriptor a = new HColumnDescriptor(Bytes.toBytes("a"));
-    htd.addFamily(a);
-    HColumnDescriptor b = new HColumnDescriptor(Bytes.toBytes("b"));
-    htd.addFamily(b);
-    HColumnDescriptor c = new HColumnDescriptor(Bytes.toBytes("c"));
-    htd.addFamily(c);
-    return htd;
+    return new HTableDescriptor(TableDescriptorBuilder.newBuilder(tableName)
+      .addColumnFamily(new HColumnDescriptor(Bytes.toBytes("a")))
+      .addColumnFamily(new HColumnDescriptor(Bytes.toBytes("b")))
+      .addColumnFamily(new HColumnDescriptor(Bytes.toBytes("c")))
+      .build());
+  }
+
+  private HTableDescriptor createBasic3FamilyHTD(final TableName tableName,
+      final ClockType clockType) {
+    return new HTableDescriptor(TableDescriptorBuilder.newBuilder(tableName)
+      .addColumnFamily(new HColumnDescriptor(Bytes.toBytes("a")))
+      .addColumnFamily(new HColumnDescriptor(Bytes.toBytes("b")))
+      .addColumnFamily(new HColumnDescriptor(Bytes.toBytes("c")))
+      .setClockType(clockType)
+      .build());
   }
 
   private void writerWALFile(Path file, List<FSWALEntry> entries) throws IOException {
